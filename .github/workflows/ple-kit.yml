@@ -1,0 +1,99 @@
+# Runs the PLE submission kit on GitHub's machines, not on the laptop.
+#
+# Why this exists: the kit is Linux-only (kit/build.py imports fcntl) and one
+# dev-set slot needs 6 CPUs / 16.25 GB. The local machine has 8.5 GB, so all
+# Docker work happens here instead. ubuntu-latest gives us 4 vCPU / 16 GB.
+#
+# Stages that need no model credentials run on every push. The Docker stages
+# (build, listen, smoke) need a model the kit can call; they run only when the
+# OPENAI_COMPAT_* secrets are set, and against a copy of submission.yaml whose
+# model_api is switched to openai-compatible so the kit will accept it.
+
+name: ple-kit
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  static:
+    name: submission.yaml + artifacts (no Docker)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the entry
+        uses: actions/checkout@v4
+        with:
+          path: entry
+
+      - name: Check out the competition kit at the pinned commit
+        uses: actions/checkout@v4
+        with:
+          repository: google-research/ple
+          path: comp
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install the kit
+        working-directory: comp
+        run: uv sync --python 3.12
+
+      - name: kit validate
+        working-directory: comp
+        run: uv run python -m kit validate ../entry
+
+      - name: kit artifacts
+        working-directory: comp
+        # 28/29 is the template's shipped state: foundation-strategy is empty.
+        # This step fails only if the artifacts are malformed, not if a task is
+        # empty, so keep the exit code visible.
+        run: uv run python -m kit artifacts ../entry
+
+  harness:
+    name: build + serve + smoke (Docker, needs a model)
+    runs-on: ubuntu-latest
+    if: ${{ vars.PLE_MODEL_BASE_URL != '' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: entry
+
+      - uses: actions/checkout@v4
+        with:
+          repository: google-research/ple
+          path: comp
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install the kit
+        working-directory: comp
+        run: uv sync --python 3.12
+
+      - name: Point the entry at the CI model
+        working-directory: entry
+        run: |
+          python3 - "$PLE_MODEL_NAME" <<'PY'
+          import re, sys, pathlib
+          p = pathlib.Path("submission.yaml")
+          s = p.read_text()
+          s = re.sub(r"(?m)^model_api:.*$", f"model_api: openai-compatible/{sys.argv[1]}", s)
+          if "model_base_url:" not in s:
+              s = s.replace(
+                  f"model_api: openai-compatible/{sys.argv[1]}",
+                  f"model_api: openai-compatible/{sys.argv[1]}\nmodel_base_url: \"{__import__('os').environ['PLE_MODEL_BASE_URL']}\"",
+              )
+          p.write_text(s)
+          print(s)
+          PY
+        env:
+          PLE_MODEL_NAME: ${{ vars.PLE_MODEL_NAME }}
+          PLE_MODEL_BASE_URL: ${{ vars.PLE_MODEL_BASE_URL }}
+
+      - name: kit check
+        working-directory: comp
+        env:
+          MODEL_API_KEY: ${{ secrets.PLE_MODEL_API_KEY }}
+        run: uv run python -m kit check ../entry --no-smoke --rebuild

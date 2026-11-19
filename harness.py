@@ -49,8 +49,10 @@ PI = shutil.which("pi") or str(HERE / "node_modules" / ".bin" / "pi")
 # pi's --thinking level: off, minimal, low, medium, high, xhigh or max
 THINKING = "max"
 # stop pi this long before the deadline (less on short tasks) so its answer
-# arrives
-STOP_BEFORE_SEC = 90
+# arrives. Raised from 90 s: the shipped dev run ended one task *inside* a tool
+# call with zero deliverables on disk (see ARTIFACTS analysis), which costs the
+# whole task. 180 s is a floor, not a fix.
+STOP_BEFORE_SEC = 180
 CATALOG_TIMEOUT_SEC = 30
 # Request features the Google Cloud route for Claude refuses. pi leaves them
 # out, and the Anthropic API works without them too.
@@ -65,10 +67,28 @@ UNKNOWN_MODEL = {"input": ["text"], "contextWindow": 128000, "maxTokens": 16384}
 NOTE = (
     "You are working on an engineering task. Your tools act on the task's Linux"
     " container, whose working directory is {workdir}; it has no internet"
-    " access. Read the whole instruction and the files it points to, put every"
-    " deliverable exactly where and in the format the instruction asks, and"
-    " check what you wrote. When you are done, reply with a short summary of"
-    " what you delivered and where."
+    " access.\n\n"
+    "Follow this protocol. It is not optional.\n"
+    "1. BUDGET. Find the remaining time and keep the last fifth of it for"
+    " writing and checking deliverables.\n"
+    "2. READ FIRST. Read the whole instruction and every file it points to,"
+    " then list the exact deliverable paths and formats it names.\n"
+    "3. DELIVER EARLY. As soon as you know that list, write a minimal but valid"
+    " version of EVERY deliverable to its exact path in its exact format"
+    " (real xlsx/docx/ifc/pdf/zip - never a placeholder text file). A gradeable"
+    " file on disk beats a better answer you never wrote. Then improve each one"
+    " in place, saving as you go.\n"
+    "4. GRADED FILES ONLY. Only the declared deliverable paths are graded;"
+    " prose in your reply scores nothing. Do not end the session with any"
+    " deliverable missing or unparsable.\n"
+    "5. BOOKKEEPING LAST. If the task also wants records in a served"
+    " application (a work package, case tracking, comments) over MCP, do that"
+    " only after every deliverable file exists.\n"
+    "6. SELF-CHECK. Reopen what you wrote: does it parse, does it carry the"
+    " numbers, units and clauses the instruction demands? Fix it before you"
+    " finish.\n\n"
+    "When you are done, reply with a short summary of what you delivered and"
+    " where."
 )
 
 

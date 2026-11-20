@@ -120,6 +120,11 @@ DELTA_FIELDS = {
     "annotations",
     "reasoning_content",
     "reasoning",
+    # gpt-oss on Groq marks every streamed delta with the channel it belongs to
+    # ("analysis"/"final") and then refuses that key on a replayed assistant
+    # message: 'property channel is unsupported'. The reasoning it separates is
+    # already accumulated above, so drop it rather than send it back.
+    "channel",
 }
 
 client = openai.AsyncOpenAI(

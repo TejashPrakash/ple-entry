@@ -716,11 +716,16 @@ class Reply:
     except ValueError:
       return False
 
-  def message(self) -> dict[str, Any]:
+  def message(self, replay_reasoning: bool = True) -> dict[str, Any]:
     """Builds the assistant message dict for the conversation history.
 
     Preserves provider-specific fields while stripping unsigned thinking blocks
     that Claude would reject.
+
+    Args:
+      replay_reasoning: Whether to send `reasoning_content` back with the
+        message. Some endpoints (Groq's gpt-oss) refuse that property on a
+        replayed assistant message; the caller turns it off when one says so.
 
     Returns:
       The formatted assistant message dictionary.
@@ -740,7 +745,7 @@ class Reply:
           }
           for c in self.calls.values()
       ]
-    if self.reasoning:
+    if replay_reasoning and self.reasoning:
       message["reasoning_content"] = self.reasoning
     return drop_thinking(message, unless=signed)
 
@@ -821,6 +826,8 @@ class Agent:
     self.token_limit = "max_completion_tokens"
     # empty once an endpoint refuses it
     self.effort = {"reasoning_effort": EFFORT}
+    # False once an endpoint refuses `reasoning_content` on a replayed message
+    self.replay_reasoning = True
     # whether calls go to the Responses API rather than Chat Completions
     self.responses = MODEL.lower().startswith(RESPONSES_MODELS)
     self.finish_margin = FINISH_MARGIN_SEC
@@ -871,7 +878,7 @@ class Agent:
         # A turn with neither (its output went to hidden reasoning, or a content
         # filter stopped it) is not sent back: endpoints refuse an assistant
         # message with null content and no tool calls.
-        self.messages.append(reply.message())
+        self.messages.append(reply.message(self.replay_reasoning))
       text = visible(head + reply.text)
       if text:
         self.session.final_message = text
@@ -1153,8 +1160,34 @@ class Agent:
         self.use_responses(error)
         or self.use_max_tokens(error)
         or self.drop_effort(error)
+        or self.drop_replay_reasoning(error)
         or self.shrink_output(error)
     )
+
+  def drop_replay_reasoning(self, error: str) -> bool:
+    """Stops replaying `reasoning_content` once an endpoint refuses it.
+
+    Groq's gpt-oss answers a replayed assistant message that carries
+    `reasoning_content` with `property reasoning_content is unsupported`. The
+    reasoning is optional context, so drop it from the history and from later
+    messages rather than fail the task.
+
+    Args:
+      error: Error message string from a 400 `APIStatusError`.
+
+    Returns:
+      `True` if reasoning was being replayed and is now dropped.
+    """
+    if (
+        not self.replay_reasoning
+        or "reasoning_content" not in error
+        or not UNSUPPORTED.search(error)
+    ):
+      return False
+    self.replay_reasoning = False
+    for message in self.messages:
+      message.pop("reasoning_content", None)
+    return True
 
   def use_responses(self, error: str) -> bool:
     """Switches to the Responses API if a Chat Completions 400 points there.

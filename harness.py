@@ -171,6 +171,8 @@ class Run:
 
   def __init__(self, session: taskbridge.Session, model: str):
     self.session, self.model, self.replies = session, model, 0
+    # the last model error pi reported; empty once it answered again
+    self.failure = ""
 
   async def on_event(self, event: dict[str, Any]) -> None:
     """Processes a parsed JSON event from Pi, updating final message and usage.
@@ -189,9 +191,19 @@ class Run:
       if text.strip():
         self.session.final_message = text.strip()
       if message.get("stopReason") == "error":
+        # pi ends the run after a model error it cannot retry: exit code 0,
+        # nothing after it. A dev run that stopped on
+        # `413 ... rate_limit_exceeded` was scored as ok that way, so the task
+        # is unfinished and must reach the evaluator as an error.
+        self.failure = (
+            f"pi stopped on a model error: {message.get('errorMessage')}"
+        )
         await self.session.log(
             f"pi: model error: {message.get('errorMessage')}"
         )
+      else:
+        # a retry that succeeded clears the error above
+        self.failure = ""
       # input_tokens counts cached prompt tokens too
       u = message.get("usage") or {}
       await self.session.usage(
@@ -237,7 +249,9 @@ async def solve(session: taskbridge.Session) -> str:
     The final message produced by Pi.
 
   Raises:
-    RuntimeError: If Pi exits before the model produces any assistant reply.
+    RuntimeError: If Pi stops on a model error (a rate limit whose retries ran
+      out, an oversized request) or exits before the model produces any
+      assistant reply.
   """
   with tempfile.TemporaryDirectory(
       prefix="pi-",
@@ -295,6 +309,9 @@ async def solve(session: taskbridge.Session) -> str:
           stop_before_sec=STOP_BEFORE_SEC,
           log_prefix="pi: ",
       )
+  if run.failure:
+    session.failure = run.failure
+    raise RuntimeError(run.failure)
   if not run.replies:
     raise RuntimeError(
         f"pi exited with {done.code} before the model answered:"

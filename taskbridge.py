@@ -102,6 +102,11 @@ class Session:
         else None
     )
     self.final_message = ""
+    # Why the task could not be finished, if it could not: a provider rate
+    # limit or an oversized request that ended the run. `_session` reports an
+    # `error` frame instead of `done` when it is set, so a cap is never graded
+    # as a completed task.
+    self.failure = ""
     self.cancelled = asyncio.Event()
     self._ids = itertools.count(1)
     self._waiting: dict[str, asyncio.Future[dict[str, Any]]] = {}
@@ -587,7 +592,9 @@ async def _session(ws: Any, handler: Any) -> None:
         if work in done and not work.cancelled()
         else Cancelled()
     )
-    if exc is None:
+    if exc is None and session.failure:
+      await session.send({"type": "error", "message": session.failure[:2000]})
+    elif exc is None:
       answer = work.result()
       await session.send({
           "type": "done",
@@ -603,7 +610,9 @@ async def _session(ws: Any, handler: Any) -> None:
           file=sys.stderr,
           flush=True,
       )
-      if session.final_message:
+      if session.failure:
+        await session.send({"type": "error", "message": session.failure[:2000]})
+      elif session.final_message:
         # a summary written before the failure still reaches the graders, who
         # read the final message
         await session.log(

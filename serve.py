@@ -754,6 +754,16 @@ class OutOfTime(Exception):  # pylint: disable=g-bad-exception-name
   """Raised when retrying a failed model call would exceed the time budget."""
 
 
+class ModelFailed(Exception):  # pylint: disable=g-bad-exception-name
+  """Raised when provider errors end the run before the task is finished.
+
+  A rate limit whose retries ran out, or a request the endpoint refuses as too
+  large, leaves the task unfinished and its deliverables unwritten. `solve`
+  marks the session, so the evaluator records an error instead of a completed
+  run with nothing on disk.
+  """
+
+
 class CutOff(asyncio.TimeoutError):  # pylint: disable=g-bad-exception-name
   """Raised when a streamed reply is cut off by its per-call deadline."""
 
@@ -866,10 +876,9 @@ class Agent:
         return await self.finish("Time is almost up.")
       try:
         reply = await self.complete(head=head)
-      except OutOfTime:
-        return await self.finish(
-            "Time is almost up, and the model is not answering."
-        )
+      except OutOfTime as exc:
+        # the provider kept failing until there was no time left to retry
+        raise ModelFailed(f"the model stopped answering: {exc}") from exc
       # what it streamed is the answer if the summary call fails too
       except CutOff:
         return await self.finish("Time is almost up.")
@@ -1825,13 +1834,24 @@ async def solve(session: taskbridge.Session) -> str:
 
   Returns:
     The final summary string returned by the agent.
+
+  Raises:
+    openai.OpenAIError: If the endpoint keeps failing (a rate limit whose
+      retries ran out, an oversized request), after marking the session.
+    ModelFailed: If retries ran out of time, after marking the session.
   """
   print(
       f"task: workdir {session.workdir}, model {MODEL},"
       f" {len(session.mcp_servers)} MCP server(s)",
       file=sys.stderr,
   )
-  return await Agent(session).run()
+  try:
+    return await Agent(session).run()
+  # a rate limit, an oversized request, an auth or connection failure: the task
+  # never finished, so it must not be reported as done
+  except (openai.OpenAIError, ModelFailed) as exc:
+    session.failure = f"{type(exc).__name__}: {exc}"[:2000]
+    raise
 
 
 if __name__ == "__main__":
